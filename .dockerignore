@@ -1,0 +1,7 @@
+*
+!service/
+!service/*.py
+!service/requirements.txt
+!Dockerfile
+!config/
+!config/*.json

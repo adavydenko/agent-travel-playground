@@ -1,0 +1,242 @@
+{
+  "events": [
+    {
+      "id": "vladivostok-ai",
+      "name": "Конференция по ИИ",
+      "start_date": "2027-03-12",
+      "end_date": "2027-03-13",
+      "request": {
+        "origin": "Москва",
+        "destination": "Владивосток",
+        "depart_date": "2027-03-10",
+        "return_date": "2027-03-14",
+        "budget_rub": 30000,
+        "passengers": 1
+      },
+      "flights": [
+        {
+          "id": "out-night",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Владивосток",
+          "depart_date": "2027-03-10",
+          "arrive_date": "2027-03-11",
+          "price_rub": 8000,
+          "available": true
+        },
+        {
+          "id": "out-day",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Владивосток",
+          "depart_date": "2027-03-10",
+          "arrive_date": "2027-03-10",
+          "price_rub": 14000,
+          "available": true
+        },
+        {
+          "id": "out-sold",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Владивосток",
+          "depart_date": "2027-03-10",
+          "arrive_date": "2027-03-11",
+          "price_rub": 5000,
+          "available": false
+        },
+        {
+          "id": "back",
+          "direction": "return",
+          "origin": "Владивосток",
+          "destination": "Москва",
+          "depart_date": "2027-03-14",
+          "arrive_date": "2027-03-14",
+          "price_rub": 8000,
+          "available": true
+        },
+        {
+          "id": "back-early",
+          "direction": "return",
+          "origin": "Владивосток",
+          "destination": "Москва",
+          "depart_date": "2027-03-13",
+          "arrive_date": "2027-03-13",
+          "price_rub": 6000,
+          "available": true
+        },
+        {
+          "id": "back-late",
+          "direction": "return",
+          "origin": "Владивосток",
+          "destination": "Москва",
+          "depart_date": "2027-03-15",
+          "arrive_date": "2027-03-15",
+          "price_rub": 6000,
+          "available": true
+        }
+      ],
+      "hotels": [
+        {
+          "id": "central",
+          "name": "Центральная",
+          "city": "Владивосток",
+          "nightly_price_rub": 3000,
+          "available_nights": [
+            "2027-03-10",
+            "2027-03-12",
+            "2027-03-13",
+            "2027-03-14",
+            "2027-03-15"
+          ]
+        },
+        {
+          "id": "mayak",
+          "name": "Маяк",
+          "city": "Владивосток",
+          "nightly_price_rub": 4000,
+          "available_nights": [
+            "2027-03-10",
+            "2027-03-11",
+            "2027-03-12",
+            "2027-03-13",
+            "2027-03-14",
+            "2027-03-15"
+          ]
+        },
+        {
+          "id": "panorama",
+          "name": "Панорама",
+          "city": "Владивосток",
+          "nightly_price_rub": 7000,
+          "available_nights": [
+            "2027-03-10",
+            "2027-03-11",
+            "2027-03-12",
+            "2027-03-13",
+            "2027-03-14",
+            "2027-03-15"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kazan-engineering",
+      "name": "Инженерный форум",
+      "start_date": "2027-04-22",
+      "end_date": "2027-04-23",
+      "request": {
+        "origin": "Москва",
+        "destination": "Казань",
+        "depart_date": "2027-04-20",
+        "return_date": "2027-04-24",
+        "budget_rub": 32000,
+        "passengers": 1
+      },
+      "flights": [
+        {
+          "id": "out-night",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Казань",
+          "depart_date": "2027-04-20",
+          "arrive_date": "2027-04-21",
+          "price_rub": 8000,
+          "available": true
+        },
+        {
+          "id": "out-day",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Казань",
+          "depart_date": "2027-04-20",
+          "arrive_date": "2027-04-20",
+          "price_rub": 14000,
+          "available": true
+        },
+        {
+          "id": "out-sold",
+          "direction": "outbound",
+          "origin": "Москва",
+          "destination": "Казань",
+          "depart_date": "2027-04-20",
+          "arrive_date": "2027-04-21",
+          "price_rub": 5000,
+          "available": false
+        },
+        {
+          "id": "back",
+          "direction": "return",
+          "origin": "Казань",
+          "destination": "Москва",
+          "depart_date": "2027-04-24",
+          "arrive_date": "2027-04-24",
+          "price_rub": 8000,
+          "available": true
+        },
+        {
+          "id": "back-early",
+          "direction": "return",
+          "origin": "Казань",
+          "destination": "Москва",
+          "depart_date": "2027-04-23",
+          "arrive_date": "2027-04-23",
+          "price_rub": 6000,
+          "available": true
+        },
+        {
+          "id": "back-late",
+          "direction": "return",
+          "origin": "Казань",
+          "destination": "Москва",
+          "depart_date": "2027-04-25",
+          "arrive_date": "2027-04-25",
+          "price_rub": 6000,
+          "available": true
+        }
+      ],
+      "hotels": [
+        {
+          "id": "central",
+          "name": "Центральная",
+          "city": "Казань",
+          "nightly_price_rub": 3000,
+          "available_nights": [
+            "2027-04-20",
+            "2027-04-22",
+            "2027-04-23",
+            "2027-04-24",
+            "2027-04-25"
+          ]
+        },
+        {
+          "id": "mayak",
+          "name": "Маяк",
+          "city": "Казань",
+          "nightly_price_rub": 4000,
+          "available_nights": [
+            "2027-04-20",
+            "2027-04-21",
+            "2027-04-22",
+            "2027-04-23",
+            "2027-04-24",
+            "2027-04-25"
+          ]
+        },
+        {
+          "id": "panorama",
+          "name": "Панорама",
+          "city": "Казань",
+          "nightly_price_rub": 7000,
+          "available_nights": [
+            "2027-04-20",
+            "2027-04-21",
+            "2027-04-22",
+            "2027-04-23",
+            "2027-04-24",
+            "2027-04-25"
+          ]
+        }
+      ]
+    }
+  ]
+}
