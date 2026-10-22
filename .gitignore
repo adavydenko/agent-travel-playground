@@ -2,8 +2,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 /data/
 .env
 _dev/
 
+AGENTS.md
+docs/requirements.md
 docs/superpowers/
