@@ -17,6 +17,15 @@
       "start_date": "2027-04-22",
       "end_date": "2027-04-23",
       "email_required": false
+    },
+    {
+      "id": "irkutsk-data",
+      "name": "Конференция по данным",
+      "description": "Конференция по данным и аналитике в Иркутске.",
+      "location": "Иркутск",
+      "start_date": "2027-05-10",
+      "end_date": "2027-05-11",
+      "email_required": false
     }
   ],
   "flights": [
@@ -99,6 +108,38 @@
       "depart_date": "2027-04-25",
       "arrive_date": "2027-04-25",
       "price_rub": 6000
+    },
+    {
+      "id": "mow-ovb",
+      "origin": "Москва",
+      "destination": "Новосибирск",
+      "depart_date": "2027-05-08",
+      "arrive_date": "2027-05-08",
+      "price_rub": 5000
+    },
+    {
+      "id": "ovb-irk",
+      "origin": "Новосибирск",
+      "destination": "Иркутск",
+      "depart_date": "2027-05-08",
+      "arrive_date": "2027-05-09",
+      "price_rub": 4500
+    },
+    {
+      "id": "irk-ovb",
+      "origin": "Иркутск",
+      "destination": "Новосибирск",
+      "depart_date": "2027-05-12",
+      "arrive_date": "2027-05-12",
+      "price_rub": 4500
+    },
+    {
+      "id": "ovb-mow",
+      "origin": "Новосибирск",
+      "destination": "Москва",
+      "depart_date": "2027-05-12",
+      "arrive_date": "2027-05-12",
+      "price_rub": 5000
     }
   ],
   "hotels": [
@@ -182,6 +223,30 @@
         "2027-04-23",
         "2027-04-24",
         "2027-04-25"
+      ]
+    },
+    {
+      "id": "irk-baikal",
+      "name": "Байкал",
+      "location": "Иркутск",
+      "nightly_price_rub": 3500,
+      "available_nights": [
+        "2027-05-08",
+        "2027-05-09",
+        "2027-05-10",
+        "2027-05-11",
+        "2027-05-12"
+      ]
+    },
+    {
+      "id": "irk-angara",
+      "name": "Ангара",
+      "location": "Иркутск",
+      "nightly_price_rub": 5500,
+      "available_nights": [
+        "2027-05-09",
+        "2027-05-10",
+        "2027-05-11"
       ]
     }
   ]
