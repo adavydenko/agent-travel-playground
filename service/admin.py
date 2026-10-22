@@ -12,7 +12,6 @@ p.add_argument('--db', default=os.environ.get('VERIFY_DB', 'data/verification.sq
 p.add_argument('--config', help='JSON мероприятий; по умолчанию VERIFY_CONFIG или config/events.json')
 sub = p.add_subparsers(dest='command', required=True)
 s = sub.add_parser('issue'); s.add_argument('student'); s.add_argument('--hours', type=float, default=168)
-s.add_argument('--event', help='ID мероприятия; при перевыпуске токена назначение сохраняется')
 s = sub.add_parser('revoke'); s.add_argument('student')
 s = sub.add_parser('reset'); s.add_argument('student'); s.add_argument('kind', choices=['travel'])
 sub.add_parser('report')
@@ -20,12 +19,12 @@ sub.add_parser('check-config')
 s = sub.add_parser('events'); s.add_argument('student')
 a = p.parse_args()
 if a.command == 'check-config':
-    for event in load_catalog(a.config).values():
+    for event in load_catalog(a.config)['events']:
         print(f"{event['id']}: {event['name']} ({event['start_date']} — {event['end_date']})")
     sys.exit(0)
 db = Store(a.db, a.config)
 if a.command == 'issue':
-    print(db.issue(a.student, a.hours, a.event))
+    print(db.issue(a.student, a.hours))
 elif a.command == 'revoke':
     db.revoke(a.student)
 elif a.command == 'reset':

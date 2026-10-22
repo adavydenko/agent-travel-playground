@@ -3,7 +3,7 @@ import json
 import os
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
@@ -23,24 +23,13 @@ class Record(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
 
-class Request(Record):
-    origin: Text
-    destination: Text
-    depart_date: Date
-    return_date: Date
-    budget_rub: Money
-    passengers: Literal[1]
-
-
 class Flight(Record):
     id: Text
-    direction: Literal['outbound', 'return']
     origin: Text
     destination: Text
     depart_date: Date
     arrive_date: Date
     price_rub: Money
-    available: bool
 
     @model_validator(mode='after')
     def chronological(self):
@@ -52,9 +41,25 @@ class Flight(Record):
 class Hotel(Record):
     id: Text
     name: Text
-    city: Text
+    location: Text
     nightly_price_rub: Money
     available_nights: list[Date]
+
+
+class Event(Record):
+    id: Text
+    name: Text
+    description: Text
+    location: Text
+    start_date: Date
+    end_date: Date
+    email_required: bool = False
+
+    @model_validator(mode='after')
+    def chronological(self):
+        if self.end_date < self.start_date:
+            raise ValueError('Конец мероприятия раньше начала')
+        return self
 
 
 def unique_ids(items):
@@ -62,35 +67,16 @@ def unique_ids(items):
         raise ValueError('ID должны быть уникальны внутри списка')
 
 
-class Event(Record):
-    id: Text
-    name: Text
-    start_date: Date
-    end_date: Date
-    request: Request
+class Catalog(Record):
+    events: Annotated[list[Event], Field(min_length=1)]
     flights: list[Flight]
     hotels: list[Hotel]
 
     @model_validator(mode='after')
-    def consistent(self):
-        r = self.request
-        if not r.depart_date < self.start_date <= self.end_date < r.return_date:
-            raise ValueError('Даты поездки должны охватывать все дни мероприятия')
-        if not 1 <= (date.fromisoformat(r.return_date) - date.fromisoformat(r.depart_date)).days <= 14:
-            raise ValueError('Поездка должна длиться от 1 до 14 дней')
-        if r.origin == r.destination:
-            raise ValueError('Города отправления и назначения должны различаться')
+    def unique_lists(self):
+        unique_ids(self.events)
         unique_ids(self.flights)
         unique_ids(self.hotels)
-        return self
-
-
-class Catalog(Record):
-    events: Annotated[list[Event], Field(min_length=1)]
-
-    @model_validator(mode='after')
-    def unique_events(self):
-        unique_ids(self.events)
         return self
 
 
@@ -98,4 +84,4 @@ def load_catalog(path=None):
     default = Path(__file__).resolve().parents[1] / 'config/events.json'
     path = Path(path or os.environ.get('VERIFY_CONFIG', default))
     catalog = Catalog.model_validate(json.loads(path.read_text(encoding='utf-8')))
-    return {event.id: event.model_dump() for event in catalog.events}
+    return catalog.model_dump()

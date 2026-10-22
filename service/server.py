@@ -3,7 +3,6 @@ import os
 import time
 from collections import defaultdict, deque
 from contextvars import ContextVar
-from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -25,55 +24,74 @@ def invoke(tool, **args):
 
 
 @mcp.tool()
-def start_task(kind: Literal['travel'] = 'travel') -> dict:
-    """Начать персональную поездку: 2 часа, до 100 вызовов. Повтор возвращает ту же попытку."""
-    return invoke('start_task', kind=kind)
+def list_events() -> dict:
+    """Список мероприятий: id, название, описание, локация, даты, нужен ли email при регистрации."""
+    return invoke('list_events')
 
 
 @mcp.tool()
-def inspect_task(task_id: str) -> dict:
-    """Прочитать запрос пользователя, рейсы и гостиницы. Даты местные, цены в учебных рублях.
+def list_flights() -> dict:
+    """Список рейсов: id, города, даты вылета и прибытия, цена в учебных рублях."""
+    return invoke('list_flights')
+
+
+@mcp.tool()
+def list_hotels() -> dict:
+    """Список гостиниц: id, название, локация, цена за ночь.
     available_nights — даты начала доступных ночей. Ночь выезда не оплачивается.
     """
-    return invoke('inspect_task', task_id=task_id)
+    return invoke('list_hotels')
 
 
 @mcp.tool()
-def book_flight(task_id: str, flight_id: str) -> dict:
-    """Забронировать один рейс на одного человека. Недоступный рейс возвращает ошибку.
-    Повтор того же рейса не создаёт дубликат. Совместимость всей поездки проверяет finish.
+def register_for_event(event_id: str, name: str, email: str | None = None) -> dict:
+    """Одна регистрация = один участник. Повторный вызов добавляет ещё одного человека.
+    Email обязателен, только если у мероприятия email_required=true.
     """
-    return invoke('book_flight', task_id=task_id, flight_id=flight_id)
+    args = dict(event_id=event_id, name=name)
+    if email is not None:
+        args['email'] = email
+    return invoke('register_for_event', **args)
 
 
 @mcp.tool()
-def book_hotel(task_id: str, hotel_id: str, check_in: str, check_out: str) -> dict:
+def list_registrations() -> dict:
+    """Показать регистрации текущего доступа на мероприятия."""
+    return invoke('list_registrations')
+
+
+@mcp.tool()
+def cancel_registration(registration_id: str) -> dict:
+    """Отменить свою регистрацию. Повтор отмены безопасен."""
+    return invoke('cancel_registration', registration_id=registration_id)
+
+
+@mcp.tool()
+def book_flight(flight_id: str) -> dict:
+    """Забронировать один рейс на одного человека.
+    Повтор того же рейса не создаёт дубликат.
+    """
+    return invoke('book_flight', flight_id=flight_id)
+
+
+@mcp.tool()
+def book_hotel(hotel_id: str, check_in: str, check_out: str) -> dict:
     """Забронировать один номер: даты YYYY-MM-DD, от 1 до 14 ночей [check_in, check_out).
-    Все ночи должны быть доступны. Заезд — дата прибытия, выезд — дата обратного вылета.
-    Повтор тех же гостиницы и дат возвращает прежнюю бронь.
+    Все ночи должны быть доступны. Повтор тех же гостиницы и дат возвращает прежнюю бронь.
     """
-    return invoke('book_hotel', task_id=task_id, hotel_id=hotel_id,
-                  check_in=check_in, check_out=check_out)
+    return invoke('book_hotel', hotel_id=hotel_id, check_in=check_in, check_out=check_out)
 
 
 @mcp.tool()
-def cancel_booking(task_id: str, booking_id: str) -> dict:
-    """Отменить свою бронь бесплатно. Повтор отмены безопасен. После успешного finish изменений нет."""
-    return invoke('cancel_booking', task_id=task_id, booking_id=booking_id)
+def cancel_booking(booking_id: str) -> dict:
+    """Отменить свою бронь бесплатно. Повтор отмены безопасен."""
+    return invoke('cancel_booking', booking_id=booking_id)
 
 
 @mcp.tool()
-def list_bookings(task_id: str) -> dict:
+def list_bookings() -> dict:
     """Прочитать брони, их статусы и сумму активных броней."""
-    return invoke('list_bookings', task_id=task_id)
-
-
-@mcp.tool()
-def finish(task_id: str) -> dict:
-    """Проверить поездку: туда + гостиница + обратно, даты, бюджет, отсутствие лишних броней.
-    passed=true выдаёт квитанцию и закрывает попытку; passed=false позволяет исправления.
-    """
-    return invoke('finish', task_id=task_id)
+    return invoke('list_bookings')
 
 
 class Gate:
