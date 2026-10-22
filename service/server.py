@@ -1,22 +1,38 @@
 """MCP Streamable HTTP. Private course bearer credentials, not OAuth discovery."""
+
 import os
 import time
 from collections import defaultdict, deque
 from contextvars import ContextVar
 
+import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
-from store import Store
+from store import DEFAULT_DB_PATH, Store
 
-store = Store(os.environ.get('VERIFY_DB', 'data/verification.sqlite3'))
+RATE_LIMIT = 120
+RATE_WINDOW_SECONDS = 60
+MAX_BODY_BYTES = 16 * 1024
+
+# Store loads and validates the catalog; bad config fails the process at startup.
+store = Store(os.environ.get('VERIFY_DB', DEFAULT_DB_PATH))
 identity = ContextVar('student')
 allowed_hosts = os.environ.get('VERIFY_HOSTS', '127.0.0.1:*,localhost:*').split(',')
-allowed_origins = os.environ.get('VERIFY_ORIGINS', 'http://127.0.0.1:*,http://localhost:*').split(',')
-mcp = FastMCP('agent-travel-playground', stateless_http=True, json_response=True,
-              transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
-                  allowed_hosts=allowed_hosts, allowed_origins=allowed_origins))
+allowed_origins = os.environ.get(
+    'VERIFY_ORIGINS', 'http://127.0.0.1:*,http://localhost:*'
+).split(',')
+mcp = FastMCP(
+    'agent-travel-playground',
+    stateless_http=True,
+    json_response=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    ),
+)
 
 
 def invoke(tool, **args):
@@ -25,7 +41,9 @@ def invoke(tool, **args):
 
 @mcp.tool()
 def list_events() -> dict:
-    """Список мероприятий: id, название, описание, локация, даты, нужен ли email при регистрации."""
+    """Список мероприятий: id, название, описание, локация, даты,
+    нужен ли email при регистрации.
+    """
     return invoke('list_events')
 
 
@@ -76,10 +94,14 @@ def book_flight(flight_id: str) -> dict:
 
 @mcp.tool()
 def book_hotel(hotel_id: str, check_in: str, check_out: str) -> dict:
-    """Забронировать один номер: даты YYYY-MM-DD, от 1 до 14 ночей [check_in, check_out).
-    Все ночи должны быть доступны. Повтор тех же гостиницы и дат возвращает прежнюю бронь.
+    """Забронировать один номер: даты YYYY-MM-DD,
+    от 1 до 14 ночей [check_in, check_out).
+    Все ночи должны быть доступны.
+    Повтор тех же гостиницы и дат возвращает прежнюю бронь.
     """
-    return invoke('book_hotel', hotel_id=hotel_id, check_in=check_in, check_out=check_out)
+    return invoke(
+        'book_hotel', hotel_id=hotel_id, check_in=check_in, check_out=check_out
+    )
 
 
 @mcp.tool()
@@ -94,7 +116,16 @@ def list_bookings() -> dict:
     return invoke('list_bookings')
 
 
+def bearer_token(value: str) -> str | None:
+    scheme, _, token = value.strip().partition(' ')
+    if scheme.lower() != 'bearer':
+        return None
+    return token.strip() or None
+
+
 class Gate:
+    """Bearer auth, per-student rate limit, and a hard request-body cap."""
+
     def __init__(self, app):
         self.app = app
         self.requests = defaultdict(deque)
@@ -103,37 +134,48 @@ class Gate:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
         headers = dict(scope['headers'])
-        bearer = headers.get(b'authorization', b'').decode('latin1')
-        student = store.authenticate(bearer[7:]) if bearer.startswith('Bearer ') else None
+        token = bearer_token(headers.get(b'authorization', b'').decode('latin1'))
+        student = store.authenticate(token) if token else None
         if student is None:
-            return await JSONResponse({'error': 'unauthorized'}, status_code=401,
-                                      headers={'WWW-Authenticate': 'Bearer'})(scope, receive, send)
+            return await JSONResponse(
+                {'error': 'unauthorized'},
+                status_code=401,
+                headers={'WWW-Authenticate': 'Bearer'},
+            )(scope, receive, send)
         now = time.monotonic()
         recent = self.requests[student]
-        while recent and recent[0] < now - 60:
+        while recent and recent[0] < now - RATE_WINDOW_SECONDS:
             recent.popleft()
-        if len(recent) >= 120:
-            return await JSONResponse({'error': 'rate_limited'}, status_code=429,
-                                      headers={'Retry-After': '60'})(scope, receive, send)
+        if len(recent) >= RATE_LIMIT:
+            return await JSONResponse(
+                {'error': 'rate_limited'},
+                status_code=429,
+                headers={'Retry-After': str(RATE_WINDOW_SECONDS)},
+            )(scope, receive, send)
         recent.append(now)
-        # Bound actual bytes, including chunked bodies; reject before JSON parsing/auditing.
+        # Bound actual bytes, including chunked bodies;
+        # reject before JSON parsing/auditing.
         body = bytearray()
         while True:
             message = await receive()
             if message['type'] == 'http.disconnect':
                 return
             body.extend(message.get('body', b''))
-            if len(body) > 16384:
-                return await JSONResponse({'error': 'body_too_large'}, status_code=413)(scope, receive, send)
+            if len(body) > MAX_BODY_BYTES:
+                return await JSONResponse({'error': 'body_too_large'}, status_code=413)(
+                    scope, receive, send
+                )
             if not message.get('more_body', False):
                 break
         consumed = False
+
         async def replay():
             nonlocal consumed
             if not consumed:
                 consumed = True
                 return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
             return await receive()
+
         marker = identity.set(student)
         try:
             await self.app(scope, replay, send)
@@ -142,3 +184,7 @@ class Gate:
 
 
 app = Gate(mcp.streamable_http_app())
+
+
+if __name__ == '__main__':
+    uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False)

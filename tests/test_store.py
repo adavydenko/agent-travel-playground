@@ -1,15 +1,15 @@
 """Token-scoped attempts: browse, book, RSVP without task_id or grader."""
+
 import json
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'service'))
 from store import Store
 from travel import nights
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -46,7 +46,9 @@ def test_snapshot_ignores_config_edits(tmp_path):
 
 
 def test_book_cancel_repeat_and_isolation(db):
-    flight = next(f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night')
+    flight = next(
+        f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night'
+    )
     r1 = invoke(db, 'book_flight', flight_id=flight['id'])
     r2 = invoke(db, 'book_flight', flight_id=flight['id'])
     assert r1['booking']['id'] == r2['booking']['id']
@@ -57,50 +59,91 @@ def test_book_cancel_repeat_and_isolation(db):
 
 
 def test_register_and_list(db):
-    assert invoke(db, 'register_for_event', event_id='vladivostok-ai', name='Alice')['ok']
+    assert invoke(db, 'register_for_event', event_id='vladivostok-ai', name='Alice')[
+        'ok'
+    ]
     regs = invoke(db, 'list_registrations')['registrations']
     assert len(regs) == 1 and regs[0]['name'] == 'Alice'
 
 
 def test_unavailable_hotel_has_no_side_effects(db):
-    out = next(f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night')
-    back = next(f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-back')
-    hotel = next(h for h in invoke(db, 'list_hotels')['hotels'] if h['id'] == 'vvo-central')
-    result = invoke(db, 'book_hotel', hotel_id=hotel['id'],
-                    check_in=out['arrive_date'], check_out=back['depart_date'])
+    out = next(
+        f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night'
+    )
+    back = next(
+        f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-back'
+    )
+    hotel = next(
+        h for h in invoke(db, 'list_hotels')['hotels'] if h['id'] == 'vvo-central'
+    )
+    result = invoke(
+        db,
+        'book_hotel',
+        hotel_id=hotel['id'],
+        check_in=out['arrive_date'],
+        check_out=back['depart_date'],
+    )
     assert result['error'] == 'hotel_unavailable'
     assert result['unavailable_nights'] == [out['arrive_date']]
     assert invoke(db, 'list_bookings')['bookings'] == []
 
 
 def test_concurrent_replays_do_not_duplicate(db):
-    out = next(f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night')
+    out = next(
+        f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night'
+    )
     with ThreadPoolExecutor(4) as pool:
-        results = list(pool.map(
-            lambda _: invoke(db, 'book_flight', flight_id=out['id']), range(8)))
+        results = list(
+            pool.map(lambda _: invoke(db, 'book_flight', flight_id=out['id']), range(8))
+        )
     assert len({r['booking']['id'] for r in results}) == 1
     assert len(invoke(db, 'list_bookings')['bookings']) == 1
 
 
-@pytest.mark.parametrize('start_date,end_date', [
-    ('bad', '2027-04-01'), ('2027-04-01', '2027-04-01'),
-    ('2027-04-02', '2027-04-01'), ('20270401', '2027-04-03'),
-])
+@pytest.mark.parametrize(
+    'start_date,end_date',
+    [
+        ('bad', '2027-04-01'),
+        ('2027-04-01', '2027-04-01'),
+        ('2027-04-02', '2027-04-01'),
+        ('20270401', '2027-04-03'),
+    ],
+)
 def test_invalid_dates(db, start_date, end_date):
-    hotel = next(h for h in invoke(db, 'list_hotels')['hotels'] if h['id'] == 'vvo-mayak')
-    assert invoke(db, 'book_hotel', hotel_id=hotel['id'],
-                  check_in=start_date, check_out=end_date)['error'] == 'invalid_dates'
+    hotel = next(
+        h for h in invoke(db, 'list_hotels')['hotels'] if h['id'] == 'vvo-mayak'
+    )
+    assert (
+        invoke(
+            db,
+            'book_hotel',
+            hotel_id=hotel['id'],
+            check_in=start_date,
+            check_out=end_date,
+        )['error']
+        == 'invalid_dates'
+    )
 
 
 def test_isolation_foreign_calls_do_not_affect_owner_budget(db):
-    out = next(f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night')
+    out = next(
+        f for f in invoke(db, 'list_flights')['flights'] if f['id'] == 'vvo-out-night'
+    )
     booked = invoke(db, 'book_flight', flight_id=out['id'])
-    assert db.call('bob', 'cancel_booking',
-                   {'booking_id': booked['booking']['id']})['error'] == 'booking_not_found'
+    assert (
+        db.call('bob', 'cancel_booking', {'booking_id': booked['booking']['id']})[
+            'error'
+        ]
+        == 'booking_not_found'
+    )
     alice_before = next(r for r in db.report() if r['student'] == 'alice')['calls']
     for _ in range(5):
-        assert db.call('bob', 'cancel_booking',
-                       {'booking_id': booked['booking']['id']})['error'] == 'booking_not_found'
+        assert (
+            db.call('bob', 'cancel_booking', {'booking_id': booked['booking']['id']})[
+                'error'
+            ]
+            == 'booking_not_found'
+        )
     alice_after = next(r for r in db.report() if r['student'] == 'alice')['calls']
     assert alice_after == alice_before == 2
     assert invoke(db, 'list_bookings')['bookings'][0]['status'] == 'active'
@@ -137,4 +180,8 @@ def test_budget_expiry_reset_and_old_work_retired(db):
 
 
 def test_nights_helper_still_used():
-    assert nights('2027-03-11', '2027-03-14') == ['2027-03-11', '2027-03-12', '2027-03-13']
+    assert nights('2027-03-11', '2027-03-14') == [
+        '2027-03-11',
+        '2027-03-12',
+        '2027-03-13',
+    ]

@@ -1,4 +1,5 @@
 """Read the same event configuration for local practice and instructor hosting."""
+
 import json
 import os
 from datetime import date
