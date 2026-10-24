@@ -1,15 +1,22 @@
-"""Transactional state and evidence for the travel verification exercise."""
+"""Access, attempts and audit evidence persisted through SQLAlchemy sessions."""
 
 import hashlib
 import json
+import logging
 import secrets
-import sqlite3
 import time
-from contextlib import contextmanager
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from catalog import load_catalog
-from travel import apply, new_attempt
+from contracts import State, ToolResponse, ToolResult
+from service.database import Database
+from service.models import Access, Attempt, AuditEvent
 
 DEFAULT_DB_PATH = 'data/verification.sqlite3'
 TASK_KIND = 'travel'
@@ -19,85 +26,42 @@ MAX_STUDENT_LEN = 80
 ATTEMPT_TTL_SECONDS = 2 * 60 * 60
 CALL_BUDGET = 100
 
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS students (
-    student TEXT PRIMARY KEY,
-    token_hash TEXT NOT NULL UNIQUE,
-    expires REAL NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    event_id TEXT
-);
-CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    student TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    expires REAL NOT NULL,
-    state TEXT NOT NULL,
-    receipt TEXT,
-    UNIQUE(student, kind)
-);
-CREATE TABLE IF NOT EXISTS events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    at REAL NOT NULL,
-    student TEXT NOT NULL,
-    task TEXT NOT NULL,
-    tool TEXT NOT NULL,
-    args TEXT NOT NULL,
-    result TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS events_task_student ON events(task, student);
-CREATE INDEX IF NOT EXISTS events_student_seq ON events(student, seq);
-"""
-
-REPORT = """
-SELECT s.student, k.kind, t.id AS task_id, t.receipt,
-       s.event_id AS event_id,
-       CASE WHEN t.id IS NULL THEN 'not_started'
-            WHEN t.expires <= ? THEN 'expired'
-            ELSE 'in_progress' END AS status,
-       (SELECT COUNT(*) FROM events e
-        WHERE e.task = t.id AND e.student = t.student) AS calls
-FROM students s
-CROSS JOIN (SELECT ? AS kind) k
-LEFT JOIN tasks t ON s.student = t.student AND k.kind = t.kind
-ORDER BY s.student, k.kind
-"""
+Result = dict[str, Any]
+Operation = Callable[..., ToolResult]
+logger = logging.getLogger(__name__)
 
 
-def digest(token):
+def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _call_count(db, task_id, student):
-    return db.execute(
-        'SELECT COUNT(*) FROM events WHERE task=? AND student=?',
-        (task_id, student),
-    ).fetchone()[0]
+def _call_count(session: Session, attempt: Attempt) -> int:
+    return (
+        session.scalar(
+            select(func.count(AuditEvent.seq)).where(
+                AuditEvent.task == attempt.id, AuditEvent.student == attempt.student
+            )
+        )
+        or 0
+    )
+
+
+def _attempt_status(attempt: Attempt | None, now: float) -> str:
+    if attempt is None:
+        return 'not_started'
+    return 'expired' if attempt.expires <= now else 'in_progress'
 
 
 class Store:
-    def __init__(self, path, config_path=None):
+    def __init__(self, path: str | Path, config_path: str | Path | None = None) -> None:
         self.path = str(path)
-        self.world = load_catalog(config_path)
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as db:
-            db.executescript(SCHEMA)
-            columns = {row['name'] for row in db.execute('PRAGMA table_info(students)')}
-            if 'event_id' not in columns:
-                db.execute('ALTER TABLE students ADD COLUMN event_id TEXT')
+        self.config_path = config_path
+        self.database = Database(path)
 
-    @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.path, timeout=15)
-        db.row_factory = sqlite3.Row
-        try:
-            with db:
-                yield db
-        finally:
-            db.close()
+    def close(self) -> None:
+        self.database.close()
 
-    def issue(self, student, hours=TOKEN_TTL_HOURS):
+    def issue(self, student: str, hours: float = TOKEN_TTL_HOURS) -> str:
         if (
             not student
             or len(student) > MAX_STUDENT_LEN
@@ -108,107 +72,186 @@ class Store:
                 f'and 0<hours<={MAX_TOKEN_HOURS}'
             )
         token = secrets.token_urlsafe(32)
-        with self.connect() as db:
-            db.execute(
-                """
-                INSERT INTO students
-                    (student, token_hash, expires, active, event_id)
-                VALUES (?, ?, ?, 1, NULL)
-                ON CONFLICT(student) DO UPDATE SET
-                    token_hash=excluded.token_hash,
-                    expires=excluded.expires,
-                    active=1,
-                    event_id=NULL
-                """,
-                (student, digest(token), time.time() + hours * 3600),
-            )
+        with self.database.write_sessions.begin() as session:
+            access = session.get(Access, student)
+            if access is None:
+                access = Access(student=student)
+                session.add(access)
+            access.token_hash = digest(token)
+            access.expires = time.time() + hours * 3600
+            access.active = True
+            access.event_id = None
+        logger.info('access_issued student=%r', student)
         return token
 
-    def authenticate(self, token):
-        with self.connect() as db:
-            row = db.execute(
-                'SELECT student FROM students WHERE token_hash=? AND active=1 '
-                'AND expires>?',
-                (digest(token), time.time()),
-            ).fetchone()
-        return row['student'] if row else None
-
-    def revoke(self, student):
-        with self.connect() as db:
-            db.execute('UPDATE students SET active=0 WHERE student=?', (student,))
-
-    def reset(self, student, kind):
-        # Old audit events remain; new task IDs cannot be confused with old receipts.
-        with self.connect() as db:
-            db.execute('DELETE FROM tasks WHERE student=? AND kind=?', (student, kind))
-
-    def call(self, student, tool, args):
-        """One transaction includes the state change and its audit event."""
-        with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            now = time.time()
-            access = db.execute(
-                'SELECT student FROM students '
-                'WHERE student=? AND active=1 AND expires>?',
-                (student, now),
-            ).fetchone()
-            if access is None:
-                return dict(ok=False, error='access_expired')
-            row = self._ensure_attempt(db, student, now)
-            if row['expires'] <= now:
-                result = dict(ok=False, error='task_expired')
-            elif _call_count(db, row['id'], student) >= CALL_BUDGET:
-                result = dict(ok=False, error='call_budget_exhausted')
-            else:
-                state = json.loads(row['state'])
-                result = apply(state, tool, args)
-                db.execute(
-                    'UPDATE tasks SET state=? WHERE id=?',
-                    (json.dumps(state), row['id']),
+    def authenticate(self, token: str) -> str | None:
+        with self.database.sessions() as session:
+            return session.scalar(
+                select(Access.student).where(
+                    Access.token_hash == digest(token),
+                    Access.active.is_(True),
+                    Access.expires > time.time(),
                 )
-            db.execute(
-                'INSERT INTO events (at, student, task, tool, args, result) '
-                'VALUES (?, ?, ?, ?, ?, ?)',
-                (
-                    now,
-                    student,
-                    row['id'],
-                    tool,
-                    json.dumps(args),
-                    json.dumps(result),
-                ),
             )
-            return result
 
-    def _ensure_attempt(self, db, student, now):
-        row = db.execute(
-            'SELECT * FROM tasks WHERE student=? AND kind=?',
-            (student, TASK_KIND),
-        ).fetchone()
-        if row is not None:
-            return row
-        task_id = secrets.token_hex(16)
-        db.execute(
-            'INSERT INTO tasks (id, student, kind, expires, state, receipt) '
-            'VALUES (?, ?, ?, ?, ?, NULL)',
-            (
-                task_id,
-                student,
-                TASK_KIND,
-                now + ATTEMPT_TTL_SECONDS,
-                json.dumps(new_attempt(self.world)),
-            ),
+    def revoke(self, student: str) -> None:
+        with self.database.write_sessions.begin() as session:
+            access = session.get(Access, student)
+            if access is not None:
+                access.active = False
+        logger.info('access_revoked student=%r', student)
+
+    def reset(self, student: str, kind: str) -> None:
+        with self.database.write_sessions.begin() as session:
+            attempt = session.scalar(
+                select(Attempt).where(Attempt.student == student, Attempt.kind == kind)
+            )
+            if attempt is not None:
+                session.delete(attempt)
+        logger.info('attempt_reset student=%r kind=%s', student, kind)
+
+    def clear_bookings(self) -> int:
+        """Clear all travel bookings atomically; keep access, attempts and audit."""
+        cleared = 0
+        with self.database.write_sessions.begin() as session:
+            attempts = session.scalars(select(Attempt).where(Attempt.kind == TASK_KIND))
+            for attempt in attempts:
+                bookings = attempt.state['bookings']
+                if bookings:
+                    cleared += len(bookings)
+                    attempt.state = {**attempt.state, 'bookings': []}
+        logger.info('bookings_cleared count=%d', cleared)
+        return cleared
+
+    def call(self, student: str, operation: Operation, args: Result) -> ToolResult:
+        """Commit the attempt state and its audit event together, or roll both back."""
+        with self.database.write_sessions.begin() as session:
+            now = time.time()
+            access = session.get(Access, student)
+            if access is None or not access.active or access.expires <= now:
+                return {'ok': False, 'error': 'access_expired'}
+            attempt = self._get_or_create_attempt(session, student, now)
+            if attempt.expires <= now:
+                result: ToolResult = {'ok': False, 'error': 'task_expired'}
+            elif _call_count(session, attempt) >= CALL_BUDGET:
+                result = {'ok': False, 'error': 'call_budget_exhausted'}
+            else:
+                result = self._execute_operation(attempt, operation, args)
+            result = ToolResponse.model_validate(result).root
+            session.add(
+                AuditEvent(
+                    at=now,
+                    student=student,
+                    task=attempt.id,
+                    tool=operation.__name__,
+                    args=json.dumps(args),
+                    result=json.dumps(result),
+                )
+            )
+        logger.info(
+            'operation_completed student=%r attempt=%s tool=%s ok=%s error=%s',
+            student,
+            attempt.id,
+            operation.__name__,
+            result['ok'],
+            result.get('error'),
         )
-        return db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        return result
 
-    def report(self):
-        with self.connect() as db:
-            rows = db.execute(REPORT, (time.time(), TASK_KIND))
-            return [dict(row) for row in rows]
+    def _execute_operation(
+        self, attempt: Attempt, operation: Operation, args: Result
+    ) -> ToolResult:
+        try:
+            world = load_catalog(self.config_path)
+        except (OSError, ValueError):
+            logger.warning('catalog_unavailable')
+            return {
+                'ok': False,
+                'error': 'invalid_config',
+                'message': (
+                    'Каталог недоступен или некорректен. Обратитесь к оператору.'
+                ),
+            }
+        # Copy nested values so assigning state back is visible to ORM tracking.
+        saved = deepcopy(attempt.state)
+        state = State(
+            **world, bookings=saved['bookings'], registrations=saved['registrations']
+        )
+        result = operation(state, **args)
+        # Legacy attempts can contain a catalog; preserve all other saved fields.
+        attempt.state = {
+            **{key: value for key, value in saved.items() if key not in world},
+            'bookings': state['bookings'],
+            'registrations': state['registrations'],
+        }
+        return result
 
-    def events(self, student):
-        with self.connect() as db:
-            rows = db.execute(
-                'SELECT * FROM events WHERE student=? ORDER BY seq', (student,)
+    @staticmethod
+    def _get_or_create_attempt(session: Session, student: str, now: float) -> Attempt:
+        attempt = session.scalar(
+            select(Attempt).where(Attempt.student == student, Attempt.kind == TASK_KIND)
+        )
+        if attempt is None:
+            attempt = Attempt(
+                id=secrets.token_hex(16),
+                student=student,
+                kind=TASK_KIND,
+                expires=now + ATTEMPT_TTL_SECONDS,
+                state=dict(bookings=[], registrations=[]),
             )
-            return [dict(row) for row in rows]
+            session.add(attempt)
+            session.flush()
+        return attempt
+
+    def report(self) -> list[Result]:
+        counts = (
+            select(AuditEvent.task, AuditEvent.student, func.count().label('calls'))
+            .group_by(AuditEvent.task, AuditEvent.student)
+            .subquery()
+        )
+        statement = (
+            select(Access, Attempt, func.coalesce(counts.c.calls, 0))
+            .outerjoin(
+                Attempt,
+                (Attempt.student == Access.student) & (Attempt.kind == TASK_KIND),
+            )
+            .outerjoin(
+                counts,
+                (counts.c.task == Attempt.id) & (counts.c.student == Access.student),
+            )
+            .order_by(Access.student)
+        )
+        now = time.time()
+        with self.database.sessions() as session:
+            return [
+                dict(
+                    student=access.student,
+                    kind=TASK_KIND,
+                    event_id=access.event_id,
+                    task_id=attempt.id if attempt else None,
+                    receipt=attempt.receipt if attempt else None,
+                    status=_attempt_status(attempt, now),
+                    calls=calls,
+                )
+                for access, attempt, calls in session.execute(statement)
+            ]
+
+    def events(self, student: str) -> list[Result]:
+        statement = (
+            select(AuditEvent)
+            .where(AuditEvent.student == student)
+            .order_by(AuditEvent.seq)
+        )
+        with self.database.sessions() as session:
+            return [
+                dict(
+                    seq=entry.seq,
+                    at=entry.at,
+                    student=entry.student,
+                    task=entry.task,
+                    tool=entry.tool,
+                    args=entry.args,
+                    result=entry.result,
+                )
+                for entry in session.scalars(statement)
+            ]

@@ -2,3 +2,6 @@
 pytest>=9,<10
 pytest-asyncio>=1,<2
 ruff>=0.9
+mypy>=1,<2
+# Match mypy's Python 3.11 target when developing on a newer interpreter.
+Deprecated<3

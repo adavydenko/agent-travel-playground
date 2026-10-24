@@ -3,14 +3,23 @@
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
+from collections.abc import Iterable, Sequence
+from contextlib import closing
+from typing import Any
 
 from catalog import load_catalog
+from contracts import Catalog
 from store import DEFAULT_DB_PATH, TASK_KIND, TOKEN_TTL_HOURS, Store
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s %(message)s',
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', default=os.environ.get('VERIFY_DB', DEFAULT_DB_PATH))
     parser.add_argument(
@@ -30,6 +39,10 @@ def main(argv=None):
     reset.add_argument('student')
     reset.add_argument('kind', choices=[TASK_KIND])
 
+    commands.add_parser(
+        'clear-bookings',
+        help='Очистить все брони всех пользователей, сохранив токены и журнал',
+    )
     commands.add_parser('report')
     commands.add_parser('check-config')
 
@@ -41,29 +54,31 @@ def main(argv=None):
         _print_events(load_catalog(args.config))
         return
 
-    db = Store(args.db, args.config)
-    if args.command == 'new-token':
-        print(db.issue(args.student, args.hours))
-    elif args.command == 'revoke':
-        db.revoke(args.student)
-    elif args.command == 'reset':
-        db.reset(args.student, args.kind)
-    elif args.command == 'report':
-        _write_report(db.report())
-    elif args.command == 'events':
-        for event in db.events(args.student):
-            print(json.dumps(event, ensure_ascii=False))
-    else:
-        raise AssertionError(args.command)
+    with closing(Store(args.db, args.config)) as db:
+        if args.command == 'new-token':
+            print(db.issue(args.student, args.hours))
+        elif args.command == 'revoke':
+            db.revoke(args.student)
+        elif args.command == 'reset':
+            db.reset(args.student, args.kind)
+        elif args.command == 'clear-bookings':
+            print(json.dumps({'bookings_cleared': db.clear_bookings()}))
+        elif args.command == 'report':
+            _write_report(db.report())
+        elif args.command == 'events':
+            for event in db.events(args.student):
+                print(json.dumps(event, ensure_ascii=False))
+        else:
+            raise AssertionError(args.command)
 
 
-def _print_events(catalog):
+def _print_events(catalog: Catalog) -> None:
     for event in catalog['events']:
         span = f'{event["start_date"]} — {event["end_date"]}'
         print(f'{event["id"]}: {event["name"]} ({span})')
 
 
-def _write_report(rows):
+def _write_report(rows: Iterable[dict[str, Any]]) -> None:
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=[

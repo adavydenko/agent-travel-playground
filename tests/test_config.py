@@ -1,7 +1,8 @@
-"""Flat world config: validation, uniqueness, snapshot independence."""
+"""Flat world config: validation, uniqueness, startup and operator commands."""
 
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -106,3 +107,31 @@ def test_cli_new_token(config, tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() and 'error' not in result.stdout.lower()
+
+
+def test_invalid_config_stops_server_but_allows_operator_report(config, tmp_path):
+    path, _ = config
+    path.write_text('{')
+    env = {
+        **os.environ,
+        'VERIFY_CONFIG': str(path),
+        'VERIFY_DB': str(tmp_path / 'db.sqlite3'),
+    }
+    server = subprocess.run(
+        [sys.executable, str(SERVICE / 'server.py')],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert server.returncode != 0
+    assert 'JSONDecodeError' in server.stderr
+    report = subprocess.run(
+        [sys.executable, str(SERVICE / 'admin.py'), 'report'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert report.returncode == 0, report.stderr
+    assert 'student,kind,event_id,task_id,receipt,status,calls' in report.stdout

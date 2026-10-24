@@ -1,8 +1,11 @@
+.idea/
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.playwright-mcp
 .ruff_cache/
+.mypy_cache/
 /data/
 .env
 _dev/

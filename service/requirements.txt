@@ -1,3 +1,6 @@
 mcp==1.30.0
 uvicorn==0.54.0
 pydantic==2.14.1
+typing_extensions==4.16.0
+SQLAlchemy==2.0.55
+limits==5.8.0
