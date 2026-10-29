@@ -8,7 +8,9 @@ from catalog import load_catalog
 
 @pytest.fixture
 def state():
-    return dict(load_catalog(), bookings=[], registrations=[])
+    return dict(
+        load_catalog(), flight_bookings=[], hotel_bookings=[], registrations=[]
+    )
 
 
 def test_list_tools_return_catalog(state):
@@ -63,15 +65,23 @@ def test_book_flight_and_hotel(state):
     flight = next(f for f in state['flights'] if f['id'] == 'vvo-out-night')
     back = next(f for f in state['flights'] if f['id'] == 'vvo-back')
     hotel = next(h for h in state['hotels'] if h['id'] == 'vvo-mayak')
-    assert travel.book_flight(state, flight_id=flight['id'])['ok']
-    assert travel.book_flight(state, flight_id=back['id'])['ok']
-    assert travel.book_hotel(
+    booked_out = travel.book_flight(state, flight_id=flight['id'])
+    booked_back = travel.book_flight(state, flight_id=back['id'])
+    booked_hotel = travel.book_hotel(
         state,
         hotel_id=hotel['id'],
         check_in=flight['arrive_date'],
         check_out=back['depart_date'],
-    )['ok']
-    assert len(travel.list_bookings(state)['bookings']) == 3
+    )
+    assert booked_out['ok']
+    assert booked_out['flight_booking']['origin'] == flight['origin']
+    assert booked_out['flight_booking']['destination'] == flight['destination']
+    assert booked_back['ok']
+    assert booked_hotel['ok']
+    assert booked_hotel['hotel_booking']['hotel_name'] == hotel['name']
+    assert booked_hotel['hotel_booking']['nights'] >= 1
+    assert len(travel.list_flight_bookings(state)['flight_bookings']) == 2
+    assert len(travel.list_hotel_bookings(state)['hotel_bookings']) == 1
 
 
 def test_hotel_unavailable_nights(state):
@@ -97,8 +107,8 @@ def test_hotel_replay_preserves_price_when_offer_removed(state):
     repeated = travel.book_hotel(
         state, hotel_id='vvo-mayak', check_in='2027-03-11', check_out='2027-03-13'
     )
-    assert repeated['repeated'] and repeated['booking'] == booked['booking']
-    travel.cancel_booking(state, booking_id=booked['booking']['id'])
+    assert repeated['repeated'] and repeated['hotel_booking'] == booked['hotel_booking']
+    travel.cancel_hotel_booking(state, hotel_booking_id=booked['hotel_booking']['id'])
     assert (
         travel.book_hotel(
             state, hotel_id='vvo-mayak', check_in='2027-03-11', check_out='2027-03-13'

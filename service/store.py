@@ -15,9 +15,8 @@ from sqlalchemy.orm import Session
 
 from catalog import load_catalog
 from contracts import State, ToolResponse, ToolResult
-from service.database import Database
-from service.models import Access, Attempt, AuditEvent
-
+from db.database import Database
+from db.models import Access, Attempt, AuditEvent
 DEFAULT_DB_PATH = 'data/verification.sqlite3'
 TASK_KIND = 'travel'
 TOKEN_TTL_HOURS = 168
@@ -27,7 +26,7 @@ ATTEMPT_TTL_SECONDS = 2 * 60 * 60
 CALL_BUDGET = 100
 
 Result = dict[str, Any]
-Operation = Callable[..., ToolResult]
+Body = Callable[[State], ToolResult]
 logger = logging.getLogger(__name__)
 
 
@@ -116,15 +115,41 @@ class Store:
         with self.database.write_sessions.begin() as session:
             attempts = session.scalars(select(Attempt).where(Attempt.kind == TASK_KIND))
             for attempt in attempts:
-                bookings = attempt.state['bookings']
-                if bookings:
-                    cleared += len(bookings)
-                    attempt.state = {**attempt.state, 'bookings': []}
+                state = attempt.state
+                flights = state.get('flight_bookings') or []
+                hotels = state.get('hotel_bookings') or []
+                count = len(flights) + len(hotels)
+                if count:
+                    cleared += count
+                    attempt.state = {
+                        **state,
+                        'flight_bookings': [],
+                        'hotel_bookings': [],
+                    }
         logger.info('bookings_cleared count=%d', cleared)
         return cleared
 
-    def call(self, student: str, operation: Operation, args: Result) -> ToolResult:
-        """Commit the attempt state and its audit event together, or roll both back."""
+    def call(
+        self, student: str, operation: Callable[..., ToolResult], args: Result | None = None
+    ) -> ToolResult:
+        """Run operation(state, **args); kept for tests and direct Store clients."""
+        recorded = dict(args or {})
+        return self.execute(
+            student,
+            operation.__name__,
+            lambda state: operation(state, **recorded),
+            recorded,
+        )
+
+    def execute(
+        self,
+        student: str,
+        tool: str,
+        body: Body,
+        args: Result | None = None,
+    ) -> ToolResult:
+        """Run body(state) inside one attempt transaction and audit the outcome."""
+        recorded_args = dict(args or {})
         with self.database.write_sessions.begin() as session:
             now = time.time()
             access = session.get(Access, student)
@@ -136,15 +161,15 @@ class Store:
             elif _call_count(session, attempt) >= CALL_BUDGET:
                 result = {'ok': False, 'error': 'call_budget_exhausted'}
             else:
-                result = self._execute_operation(attempt, operation, args)
+                result = self._run_body(attempt, body)
             result = ToolResponse.model_validate(result).root
             session.add(
                 AuditEvent(
                     at=now,
                     student=student,
                     task=attempt.id,
-                    tool=operation.__name__,
-                    args=json.dumps(args),
+                    tool=tool,
+                    args=json.dumps(recorded_args),
                     result=json.dumps(result),
                 )
             )
@@ -152,15 +177,13 @@ class Store:
             'operation_completed student=%r attempt=%s tool=%s ok=%s error=%s',
             student,
             attempt.id,
-            operation.__name__,
+            tool,
             result['ok'],
             result.get('error'),
         )
         return result
 
-    def _execute_operation(
-        self, attempt: Attempt, operation: Operation, args: Result
-    ) -> ToolResult:
+    def _run_body(self, attempt: Attempt, body: Body) -> ToolResult:
         try:
             world = load_catalog(self.config_path)
         except (OSError, ValueError):
@@ -175,13 +198,17 @@ class Store:
         # Copy nested values so assigning state back is visible to ORM tracking.
         saved = deepcopy(attempt.state)
         state = State(
-            **world, bookings=saved['bookings'], registrations=saved['registrations']
+            **world,
+            flight_bookings=list(saved.get('flight_bookings') or []),
+            hotel_bookings=list(saved.get('hotel_bookings') or []),
+            registrations=saved['registrations'],
         )
-        result = operation(state, **args)
+        result = body(state)
         # Legacy attempts can contain a catalog; preserve all other saved fields.
         attempt.state = {
             **{key: value for key, value in saved.items() if key not in world},
-            'bookings': state['bookings'],
+            'flight_bookings': state['flight_bookings'],
+            'hotel_bookings': state['hotel_bookings'],
             'registrations': state['registrations'],
         }
         return result
@@ -197,7 +224,9 @@ class Store:
                 student=student,
                 kind=TASK_KIND,
                 expires=now + ATTEMPT_TTL_SECONDS,
-                state=dict(bookings=[], registrations=[]),
+                state=dict(
+                    flight_bookings=[], hotel_bookings=[], registrations=[]
+                ),
             )
             session.add(attempt)
             session.flush()

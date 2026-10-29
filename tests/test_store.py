@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 import travel
 from catalog import load_catalog
-from models import Access, Attempt
+from db.models import Access, Attempt
 from store import Store
 from travel import nights
 
@@ -53,13 +53,13 @@ def test_config_edits_apply_without_restart_or_reset(tmp_path):
     changed = store.call('alice', travel.list_hotels, {})
     assert changed['hotels'][0]['available_nights'] == []
     assert store.report()[0]['task_id'] == attempt_id
-    assert store.call('alice', travel.list_bookings, {})['bookings'] == [
-        booked['booking']
+    assert store.call('alice', travel.list_flight_bookings, {})['flight_bookings'] == [
+        booked['flight_booking']
     ]
     repeated = store.call(
         'alice', travel.book_flight, {'flight_id': data['flights'][0]['id']}
     )
-    assert repeated['repeated'] and repeated['booking'] == booked['booking']
+    assert repeated['repeated'] and repeated['flight_booking'] == booked['flight_booking']
 
 
 def test_legacy_attempt_keeps_bookings_receipt_and_journal(tmp_path):
@@ -77,7 +77,7 @@ def test_legacy_attempt_keeps_bookings_receipt_and_journal(tmp_path):
         {'event_id': world['events'][0]['id'], 'name': 'A'},
     )['registration']
     legacy_state = dict(
-        world, bookings=[booked['booking']], registrations=[registration]
+        world, flight_bookings=[booked['flight_booking']], hotel_bookings=[], registrations=[registration]
     )
     legacy_state['legacy_extra'] = {'preserved': True}
     with store.database.write_sessions.begin() as session:
@@ -90,8 +90,8 @@ def test_legacy_attempt_keeps_bookings_receipt_and_journal(tmp_path):
     restarted = Store(store.path, path)
     assert restarted.authenticate(token) == 'alice'
     assert restarted.call('alice', travel.list_flights, {})['flights'] == []
-    assert restarted.call('alice', travel.list_bookings, {})['bookings'] == [
-        booked['booking']
+    assert restarted.call('alice', travel.list_flight_bookings, {})['flight_bookings'] == [
+        booked['flight_booking']
     ]
     assert restarted.call('alice', travel.list_registrations, {})['registrations'] == [
         registration
@@ -126,11 +126,11 @@ def test_book_cancel_repeat_and_isolation(db):
     )
     r1 = invoke(db, travel.book_flight, flight_id=flight['id'])
     r2 = invoke(db, travel.book_flight, flight_id=flight['id'])
-    assert r1['booking']['id'] == r2['booking']['id']
+    assert r1['flight_booking']['id'] == r2['flight_booking']['id']
     bob = invoke(db, travel.book_flight, student='bob', flight_id=flight['id'])
-    assert bob['booking']['id'] != r1['booking']['id']
-    assert invoke(db, travel.cancel_booking, booking_id=r1['booking']['id'])['ok']
-    assert invoke(db, travel.cancel_booking, booking_id=r1['booking']['id'])['ok']
+    assert bob['flight_booking']['id'] != r1['flight_booking']['id']
+    assert invoke(db, travel.cancel_flight_booking, flight_booking_id=r1['flight_booking']['id'])['ok']
+    assert invoke(db, travel.cancel_flight_booking, flight_booking_id=r1['flight_booking']['id'])['ok']
 
 
 def test_register_and_list(db):
@@ -162,7 +162,7 @@ def test_unavailable_hotel_has_no_side_effects(db):
     )
     assert result['error'] == 'hotel_unavailable'
     assert result['unavailable_nights'] == [out['arrive_date']]
-    assert invoke(db, travel.list_bookings)['bookings'] == []
+    assert invoke(db, travel.list_hotel_bookings)['hotel_bookings'] == []
 
 
 def test_concurrent_replays_do_not_duplicate(db):
@@ -177,8 +177,8 @@ def test_concurrent_replays_do_not_duplicate(db):
                 lambda _: invoke(db, travel.book_flight, flight_id=out['id']), range(8)
             )
         )
-    assert len({r['booking']['id'] for r in results}) == 1
-    assert len(invoke(db, travel.list_bookings)['bookings']) == 1
+    assert len({r['flight_booking']['id'] for r in results}) == 1
+    assert len(invoke(db, travel.list_flight_bookings)['flight_bookings']) == 1
 
 
 @pytest.mark.parametrize(
@@ -214,22 +214,22 @@ def test_isolation_foreign_calls_do_not_affect_owner_budget(db):
     )
     booked = invoke(db, travel.book_flight, flight_id=out['id'])
     assert (
-        db.call('bob', travel.cancel_booking, {'booking_id': booked['booking']['id']})[
+        db.call('bob', travel.cancel_flight_booking, {'flight_booking_id': booked['flight_booking']['id']})[
             'error'
         ]
-        == 'booking_not_found'
+        == 'flight_booking_not_found'
     )
     alice_before = next(r for r in db.report() if r['student'] == 'alice')['calls']
     for _ in range(5):
         assert (
             db.call(
-                'bob', travel.cancel_booking, {'booking_id': booked['booking']['id']}
+                'bob', travel.cancel_flight_booking, {'flight_booking_id': booked['flight_booking']['id']}
             )['error']
-            == 'booking_not_found'
+            == 'flight_booking_not_found'
         )
     alice_after = next(r for r in db.report() if r['student'] == 'alice')['calls']
     assert alice_after == alice_before == 2
-    assert invoke(db, travel.list_bookings)['bookings'][0]['status'] == 'active'
+    assert invoke(db, travel.list_flight_bookings)['flight_bookings'][0]['status'] == 'active'
 
 
 def test_auth_rotation_revocation_expiry(db):
@@ -247,25 +247,25 @@ def test_auth_rotation_revocation_expiry(db):
 
 def test_budget_expiry_reset_and_old_work_retired(db):
     assert {r['status'] for r in db.report()} == {'not_started'}
-    invoke(db, travel.list_bookings)
+    invoke(db, travel.list_flight_bookings)
     task_id = next(r['task_id'] for r in db.report() if r['student'] == 'alice')
     for _ in range(99):
-        invoke(db, travel.list_bookings)
-    assert invoke(db, travel.list_bookings)['error'] == 'call_budget_exhausted'
+        invoke(db, travel.list_flight_bookings)
+    assert invoke(db, travel.list_flight_bookings)['error'] == 'call_budget_exhausted'
     db.reset('alice', 'travel')
-    assert invoke(db, travel.list_bookings)['ok']
+    assert invoke(db, travel.list_flight_bookings)['ok']
     new_id = next(r['task_id'] for r in db.report() if r['student'] == 'alice')
     assert new_id != task_id
     assert any(e['task'] == task_id for e in db.events('alice'))
     with db.database.write_sessions.begin() as session:
         session.get(Attempt, new_id).expires = 0
-    assert invoke(db, travel.list_bookings)['error'] == 'task_expired'
+    assert invoke(db, travel.list_flight_bookings)['error'] == 'task_expired'
 
 
 def test_clear_all_bookings_preserves_other_data(db, tmp_path):
     tokens = {student: db.issue(student) for student in ('alice', 'bob', 'unused')}
-    flight = invoke(db, travel.book_flight, flight_id='vvo-out-night')['booking']
-    invoke(db, travel.cancel_booking, booking_id=flight['id'])
+    flight = invoke(db, travel.book_flight, flight_id='vvo-out-night')['flight_booking']
+    invoke(db, travel.cancel_flight_booking, flight_booking_id=flight['id'])
     invoke(
         db,
         travel.book_hotel,
@@ -294,7 +294,7 @@ def test_clear_all_bookings_preserves_other_data(db, tmp_path):
                 student='alice',
                 kind='other',
                 expires=0,
-                state={'bookings': [{'id': 'keep'}]},
+                state={'flight_bookings': [{'id': 'keep'}], 'hotel_bookings': []},
             )
         )
     with db.database.sessions() as session:
@@ -320,7 +320,8 @@ def test_clear_all_bookings_preserves_other_data(db, tmp_path):
         for attempt in session.scalars(select(Attempt)):
             expires, receipt, state = attempts_before[attempt.id]
             if attempt.kind == 'travel':
-                state['bookings'] = []
+                state['flight_bookings'] = []
+                state['hotel_bookings'] = []
             assert (attempt.expires, attempt.receipt, attempt.state) == (
                 expires,
                 receipt,
@@ -363,29 +364,29 @@ def test_operation_logs_metadata_without_credentials_or_participant_data(db, cap
 
 
 def test_failed_operation_rolls_back_state_and_audit(db):
-    invoke(db, travel.list_bookings)
+    invoke(db, travel.list_flight_bookings)
     before = db.events('alice')
 
     def failing_operation(state):
-        state['bookings'].append({'id': 'must-not-persist'})
+        state['flight_bookings'].append({'id': 'must-not-persist'})
         raise RuntimeError('failure before audit')
 
     with pytest.raises(RuntimeError, match='failure before audit'):
         db.call('alice', failing_operation, {})
     assert db.events('alice') == before
-    assert invoke(db, travel.list_bookings)['bookings'] == []
+    assert invoke(db, travel.list_flight_bookings)['flight_bookings'] == []
 
 
 def test_invalid_result_rolls_back_state_and_audit(db):
-    invoke(db, travel.list_bookings)
+    invoke(db, travel.list_flight_bookings)
     before = db.events('alice')
 
     def broken_operation(state):
         booking = {'id': 'broken', 'status': 'active', 'total_rub': 'free'}
-        state['bookings'].append(booking)
-        return {'ok': True, 'booking': booking}
+        state['flight_bookings'].append(booking)
+        return {'ok': True, 'flight_booking': booking}
 
     with pytest.raises(ValidationError):
         db.call('alice', broken_operation, {})
     assert db.events('alice') == before
-    assert invoke(db, travel.list_bookings)['bookings'] == []
+    assert invoke(db, travel.list_flight_bookings)['flight_bookings'] == []

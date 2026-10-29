@@ -9,14 +9,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlalchemy.schema import CreateIndex
 
-from models import Base
+from db.models import Base
 
 
 class Database:
     """Read sessions and serialized write transactions share one connection pool."""
 
     def __init__(self, path: str | Path) -> None:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).parent.parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(
             URL.create('sqlite+pysqlite', database=str(path)),
             connect_args={'timeout': 15},

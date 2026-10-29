@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from sqlalchemy import select
 
 from mcp_client import call, connect, schemas
-from models import Attempt
+from db.models import Attempt
 from store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,8 +29,10 @@ EXPECTED_TOOLS = {
     'cancel_registration',
     'book_flight',
     'book_hotel',
-    'cancel_booking',
-    'list_bookings',
+    'list_flight_bookings',
+    'list_hotel_bookings',
+    'cancel_flight_booking',
+    'cancel_hotel_booking',
 }
 
 
@@ -75,7 +77,8 @@ def live(tmp_path_factory):
                 if proc.poll() is not None:
                     raise RuntimeError((folder / 'server.log').read_text())
                 try:
-                    if httpx.get(url).status_code == 401:
+                    # Stateless HTTP exposes POST (and DELETE); unauthenticated → 401.
+                    if httpx.post(url, json={}).status_code == 401:
                         break
                 except httpx.ConnectError:
                     pass
@@ -136,25 +139,26 @@ async def test_real_mcp_two_principals(live):
         for name, tool in tools.items():
             assert tool.description
             assert tool.annotations is not None
-            assert tool.annotations.readOnlyHint == name.startswith('list_')
-            assert tool.annotations.openWorldHint is False
-        assert tools['register_for_event'].annotations.idempotentHint is False
-        assert tools['book_flight'].annotations.idempotentHint is True
-        assert tools['cancel_booking'].annotations.destructiveHint is True
-        assert set(tools['book_hotel'].inputSchema['properties']) == {
+            assert tool.annotations.read_only_hint == name.startswith('list_')
+            assert tool.annotations.open_world_hint is False
+        assert tools['register_for_event'].annotations.idempotent_hint is False
+        assert tools['book_flight'].annotations.idempotent_hint is True
+        assert tools['cancel_flight_booking'].annotations.destructive_hint is True
+        assert tools['cancel_hotel_booking'].annotations.destructive_hint is True
+        assert set(tools['book_hotel'].input_schema['properties']) == {
             'hotel_id',
             'check_in',
             'check_out',
         }
-        assert set(tools['book_hotel'].inputSchema['required']) == {
+        assert set(tools['book_hotel'].input_schema['required']) == {
             'hotel_id',
             'check_in',
             'check_out',
         }
-        assert tools['list_events'].inputSchema.get('properties', {}) == {}
-        assert 'email' not in tools['register_for_event'].inputSchema['required']
+        assert tools['list_events'].input_schema.get('properties', {}) == {}
+        assert 'email' not in tools['register_for_event'].input_schema['required']
         for tool in tools.values():
-            for field in tool.inputSchema.get('properties', {}).values():
+            for field in tool.input_schema.get('properties', {}).values():
                 assert field.get('description')
         events_a, events_b = await asyncio.gather(
             call(a, 'list_events', {}), call(b, 'list_events', {})
@@ -190,17 +194,40 @@ async def test_real_mcp_two_principals(live):
                 },
             )
         )['ok']
-        bookings = await call(a, 'list_bookings', {})
-        assert len([b for b in bookings['bookings'] if b['status'] == 'active']) == 3
-        assert (await call(b, 'list_bookings', {}))['bookings'] == []
-        booking_id = bookings['bookings'][0]['id']
-        assert (await call(b, 'cancel_booking', {'booking_id': booking_id}))[
-            'error'
-        ] == 'booking_not_found'
+        flights_booked = await call(a, 'list_flight_bookings', {})
+        hotels_booked = await call(a, 'list_hotel_bookings', {})
+        assert (
+            len(
+                [
+                    b
+                    for b in flights_booked['flight_bookings']
+                    if b['status'] == 'active'
+                ]
+            )
+            == 2
+        )
+        assert (
+            len(
+                [b for b in hotels_booked['hotel_bookings'] if b['status'] == 'active']
+            )
+            == 1
+        )
+        assert (await call(b, 'list_flight_bookings', {}))['flight_bookings'] == []
+        assert (await call(b, 'list_hotel_bookings', {}))['hotel_bookings'] == []
+        flight_booking_id = flights_booked['flight_bookings'][0]['id']
+        assert (
+            await call(
+                b, 'cancel_flight_booking', {'flight_booking_id': flight_booking_id}
+            )
+        )['error'] == 'flight_booking_not_found'
         for _ in range(2):
-            assert (await call(a, 'cancel_booking', {'booking_id': booking_id}))[
-                'booking'
-            ]['status'] == 'cancelled'
+            assert (
+                await call(
+                    a,
+                    'cancel_flight_booking',
+                    {'flight_booking_id': flight_booking_id},
+                )
+            )['flight_booking']['status'] == 'cancelled'
         registration_id = reg['registration']['id']
         assert (
             await call(b, 'cancel_registration', {'registration_id': registration_id})
@@ -237,11 +264,11 @@ async def test_http_reports_business_errors(live):
     token = store.issue('error-test')
     async with connect(url, token) as session:
         refused = await session.call_tool('book_flight', {'flight_id': 'missing'})
-        assert refused.isError
-        assert refused.structuredContent == {'ok': False, 'error': 'unknown_flight'}
-        assert json.loads(refused.content[0].text) == refused.structuredContent
+        assert refused.is_error
+        assert refused.structured_content == {'ok': False, 'error': 'unknown_flight'}
+        assert json.loads(refused.content[0].text) == refused.structured_content
         assert await call(session, 'book_flight', {'flight_id': 'missing'}) == (
-            refused.structuredContent
+            refused.structured_content
         )
 
 
@@ -278,9 +305,14 @@ async def test_operator_clears_bookings_without_restarting_mcp(live):
         assert store.report() == before
         assert store.events('clear-alice') == events_before
         for session in (a, b):
-            assert await call(session, 'list_bookings', {}) == {
+            assert await call(session, 'list_flight_bookings', {}) == {
                 'ok': True,
-                'bookings': [],
+                'flight_bookings': [],
+                'total_rub': 0,
+            }
+            assert await call(session, 'list_hotel_bookings', {}) == {
+                'ok': True,
+                'hotel_bookings': [],
                 'total_rub': 0,
             }
         assert (await call(a, 'list_registrations', {}))['registrations'] == [
@@ -305,10 +337,10 @@ async def test_http_publishes_and_honors_data_contracts(live):
 
         async def checked(name, args):
             response = await session.call_tool(name, args)
-            validators[name].validate(response.structuredContent)
-            assert json.loads(response.content[0].text) == response.structuredContent
-            assert response.isError == (not response.structuredContent['ok'])
-            return response.structuredContent
+            validators[name].validate(response.structured_content)
+            assert json.loads(response.content[0].text) == response.structured_content
+            assert response.is_error == (not response.structured_content['ok'])
+            return response.structured_content
 
         events = await checked('list_events', {})
         flights = await checked('list_flights', {})
@@ -329,8 +361,12 @@ async def test_http_publishes_and_honors_data_contracts(live):
                 'check_out': '2027-03-13',
             },
         )
-        await checked('list_bookings', {})
-        await checked('cancel_booking', {'booking_id': booked['booking']['id']})
+        await checked('list_flight_bookings', {})
+        await checked('list_hotel_bookings', {})
+        await checked(
+            'cancel_flight_booking',
+            {'flight_booking_id': booked['flight_booking']['id']},
+        )
         await checked(
             'cancel_registration', {'registration_id': reg['registration']['id']}
         )
@@ -346,7 +382,7 @@ async def test_http_publishes_and_honors_data_contracts(live):
         with pytest.raises(ValidationError):
             validators['list_flights'].validate(invalid)
         invalid = json.loads(json.dumps(booked))
-        invalid['booking']['total_rub'] = 'free'
+        invalid['flight_booking']['total_rub'] = 'free'
         with pytest.raises(ValidationError):
             validators['book_flight'].validate(invalid)
         with pytest.raises(ValidationError):
@@ -368,20 +404,30 @@ async def test_http_reloads_config_and_recovers_from_invalid_json(live):
             assert (await call(session, 'list_flights', {}))['flights'] == []
             path.write_text('{')
             refused = await session.call_tool('list_flights', {})
-            assert refused.isError
-            assert refused.structuredContent['error'] == 'invalid_config'
+            assert refused.is_error
+            assert refused.structured_content['error'] == 'invalid_config'
             path.write_text(original)
             assert (await call(session, 'list_flights', {}))['flights']
     finally:
         path.write_text(original)
 
 
-def test_http_rate_limit(live):
+@pytest.mark.asyncio
+async def test_http_rate_limit(live):
     url, store, _, _ = live
     token = store.issue('rate-test')
-    with httpx.Client(headers={'Authorization': f'Bearer {token}'}) as client:
-        statuses = [client.post(url, json={}).status_code for _ in range(121)]
-    assert statuses[-1] == 429
+    # FastMCP sliding-window limit is per authenticated MCP request (not raw HTTP).
+    # tools/list does not consume the attempt call budget.
+    async with connect(url, token) as session:
+        limited = False
+        for _ in range(150):
+            try:
+                await session.list_tools()
+            except Exception as error:
+                assert 'Rate limit' in str(error)
+                limited = True
+                break
+        assert limited
 
 
 @pytest.mark.asyncio
@@ -405,8 +451,8 @@ async def test_http_masks_internal_errors_and_keeps_private_data_out_of_logs(liv
                 select(Attempt).where(Attempt.student == 'diagnostic-test')
             )
             attempt.state = {}
-        failed = await session.call_tool('list_bookings', {})
-        assert failed.isError
+        failed = await session.call_tool('list_flight_bookings', {})
+        assert failed.is_error
         message = '\n'.join(item.text for item in failed.content if item.type == 'text')
         assert 'Внутренняя ошибка сервиса' in message
         assert 'KeyError' not in message and 'Traceback' not in message
@@ -417,9 +463,13 @@ async def test_http_masks_internal_errors_and_keeps_private_data_out_of_logs(liv
             )
             invalid = dict(registered['registration'])
             invalid['name'] = {'private': 'Private Participant'}
-            attempt.state = {'bookings': [], 'registrations': [invalid]}
+            attempt.state = {
+                'flight_bookings': [],
+                'hotel_bookings': [],
+                'registrations': [invalid],
+            }
         failed = await session.call_tool('list_registrations', {})
-        assert failed.isError
+        assert failed.is_error
         message = '\n'.join(item.text for item in failed.content if item.type == 'text')
         assert 'Внутренняя ошибка сервиса' in message
         assert 'ValidationError' not in message

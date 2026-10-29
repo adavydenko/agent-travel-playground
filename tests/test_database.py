@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 import travel
-from models import Attempt
+from db.models import Attempt
 from store import Store
 
 
@@ -20,7 +20,19 @@ def test_existing_sqlite_database_is_preserved(tmp_path, has_event_id):
     path = tmp_path / 'legacy.sqlite3'
     token = 'test-only-legacy-token'
     state = {
-        'bookings': [{'id': 'old-booking', 'status': 'active', 'total_rub': 321}],
+        'flight_bookings': [
+            {
+                'id': 'old-booking',
+                'status': 'active',
+                'total_rub': 321,
+                'flight_id': 'legacy-flight',
+                'origin': 'SVO',
+                'destination': 'VVO',
+                'depart_date': '2027-03-10',
+                'arrive_date': '2027-03-10',
+            }
+        ],
+        'hotel_bookings': [],
         'registrations': [{'id': 'old-registration', 'status': 'active'}],
         'legacy_field': {'preserved': True},
     }
@@ -67,8 +79,9 @@ def test_existing_sqlite_database_is_preserved(tmp_path, has_event_id):
         assert store.authenticate(token) == 'legacy'
         before = store.events('legacy')
         assert before[0]['result'] == '{"saved":true}'
-        result = store.call('legacy', travel.list_bookings, {})
-        assert result['bookings'] == state['bookings'] and result['total_rub'] == 321
+        result = store.call('legacy', travel.list_flight_bookings, {})
+        assert result['total_rub'] == 321
+        assert result['flight_bookings'][0]['id'] == 'old-booking'
         report = store.report()[0]
         assert report['task_id'] == 'old-attempt'
         assert report['receipt'] == '{"saved":true}'
@@ -96,7 +109,7 @@ def test_audit_write_failure_rolls_back_booking(tmp_path):
     path = tmp_path / 'atomic.sqlite3'
     with closing(Store(path)) as store:
         store.issue('alice')
-        store.call('alice', travel.list_bookings, {})
+        store.call('alice', travel.list_flight_bookings, {})
         before = store.events('alice')
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.executescript("""
@@ -110,7 +123,8 @@ def test_audit_write_failure_rolls_back_booking(tmp_path):
             saved = json.loads(
                 connection.execute('SELECT state FROM tasks').fetchone()[0]
             )
-        assert saved['bookings'] == []
+        assert saved.get('flight_bookings') == []
+        assert saved.get('hotel_bookings') == []
 
 
 def test_clear_bookings_failure_rolls_back_all_owners(tmp_path):

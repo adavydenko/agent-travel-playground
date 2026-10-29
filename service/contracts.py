@@ -64,19 +64,32 @@ class Catalog(Record):
 
 
 @with_config(ConfigDict(extra='allow', strict=True))
-class Booking(TypedDict):
-    """New bookings include kind/item_id; old saved records may omit them.
-
-    Hotel bookings also include check_in/check_out. Extra historical fields survive.
-    """
+class FlightBooking(TypedDict):
+    """Flight booking with a snapshot of the chosen itinerary."""
 
     id: str
     status: Status
     total_rub: Money
-    kind: NotRequired[Literal['flight', 'hotel']]
-    item_id: NotRequired[Annotated[str, Field(description='ID рейса или гостиницы.')]]
-    check_in: NotRequired[Date]
-    check_out: NotRequired[Date]
+    flight_id: Text
+    origin: Text
+    destination: Text
+    depart_date: Date
+    arrive_date: Date
+
+
+@with_config(ConfigDict(extra='allow', strict=True))
+class HotelBooking(TypedDict):
+    """Hotel booking with stay dates and a snapshot of the property."""
+
+    id: str
+    status: Status
+    total_rub: Money
+    hotel_id: Text
+    hotel_name: Text
+    location: Text
+    check_in: Date
+    check_out: Date
+    nights: Annotated[int, Field(ge=1, description='Число ночей [check_in, check_out).')]
 
 
 @with_config(ConfigDict(extra='allow', strict=True))
@@ -91,7 +104,8 @@ class Registration(TypedDict):
 
 
 class AttemptState(TypedDict):
-    bookings: list[Booking]
+    flight_bookings: list[FlightBooking]
+    hotel_bookings: list[HotelBooking]
     registrations: list[Registration]
 
 
@@ -114,7 +128,8 @@ class Error(Record):
         'unknown_hotel',
         'invalid_dates',
         'hotel_unavailable',
-        'booking_not_found',
+        'flight_booking_not_found',
+        'hotel_booking_not_found',
     ]
     message: NotRequired[str]
     unavailable_nights: NotRequired[list[Date]]
@@ -140,8 +155,13 @@ class RegistrationsResult(Success):
     registrations: list[Registration]
 
 
-class BookingsResult(Success):
-    bookings: list[Booking]
+class FlightBookingsResult(Success):
+    flight_bookings: list[FlightBooking]
+    total_rub: Money
+
+
+class HotelBookingsResult(Success):
+    hotel_bookings: list[HotelBooking]
     total_rub: Money
 
 
@@ -149,8 +169,15 @@ class RegistrationResult(Success):
     registration: Registration
 
 
-class BookingResult(Success):
-    booking: Booking
+class FlightBookingResult(Success):
+    flight_booking: FlightBooking
+    repeated: NotRequired[
+        Annotated[bool, Field(description='При бронировании: найдена прежняя бронь.')]
+    ]
+
+
+class HotelBookingResult(Success):
+    hotel_booking: HotelBooking
     repeated: NotRequired[
         Annotated[bool, Field(description='При бронировании: найдена прежняя бронь.')]
     ]
@@ -161,9 +188,11 @@ ToolResult = (
     | FlightsResult
     | HotelsResult
     | RegistrationsResult
-    | BookingsResult
+    | FlightBookingsResult
+    | HotelBookingsResult
     | RegistrationResult
-    | BookingResult
+    | FlightBookingResult
+    | HotelBookingResult
     | Error
 )
 
