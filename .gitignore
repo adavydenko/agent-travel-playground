@@ -9,7 +9,4 @@ __pycache__/
 /data/
 .env
 _dev/
-
-AGENTS.md
-docs/requirements.md
-docs/superpowers/
+docs
